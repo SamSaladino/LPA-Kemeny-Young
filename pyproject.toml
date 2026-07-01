@@ -18,6 +18,8 @@ authors = [
 
 dependencies = [
     "networkx>=3.2,<4",
+    "pandas",
+    "matplotlib>=3.10",
 ]
 
 

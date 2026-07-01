@@ -1,217 +1,468 @@
-"""Label propagation algorithms for graph-based pathway analysis."""
-import pandas as pd
+"""Label propagation and candidate aggregation for graph-based analysis."""
+
+from __future__ import annotations
+
+from collections import Counter
+from collections.abc import Collection, Hashable, Mapping, Sequence
+
 import networkx as nx
-import matplotlib.pyplot as plt
-import numpy as np
-import random
-from joblib import Parallel, delayed
- 
-def set_labels(G, exp_status):
-    """Set the initial labels for the nodes in the graph.
-    The labels are based on the experimental status of the nodes.
-    
+import pandas as pd
+
+
+def set_labels(
+    graph: nx.Graph,
+    experimental_nodes: Collection[Hashable],
+) -> dict[Hashable, int]:
+    """
+    Assign binary labels to graph nodes.
+
+    Nodes included in ``experimental_nodes`` receive label 1.
+    All remaining graph nodes receive label 0.
+
     Parameters
     ----------
-    G : NetworkX graph
-    exp_status : list
-        A list of nodes that are in the experimental set.
-    
+    graph
+        Input NetworkX graph.
+    experimental_nodes
+        Nodes belonging to the experimental set.
+
     Returns
     -------
-    labels : dict"""
-    labels = {nodes : (1 if nodes in exp_status else 0) for nodes in G.nodes()}
-    return labels
+    dict
+        Mapping from graph nodes to binary labels.
+
+    Raises
+    ------
+    ValueError
+        If an experimental node is absent from the graph.
+    """
+    experimental_nodes = set(experimental_nodes)
+    graph_nodes = set(graph.nodes)
+
+    unknown_nodes = experimental_nodes - graph_nodes
+
+    if unknown_nodes:
+        preview = ", ".join(
+            map(str, sorted(unknown_nodes, key=str)[:5])
+        )
+
+        raise ValueError(
+            "Experimental nodes are absent from the graph: "
+            f"{preview}"
+        )
+
+    return {
+        node: int(node in experimental_nodes)
+        for node in graph.nodes
+    }
 
 
+def _validate_labels(
+    graph: nx.Graph,
+    labels: Mapping[Hashable, int],
+) -> None:
+    """Validate that labels form a complete binary graph assignment."""
+    graph_nodes = set(graph.nodes)
+    label_nodes = set(labels)
 
-def lpa(G, labels, iterations=1000):
-    """Run the Label Propagation Algorithm. 
-    For a given graph G with initial node labels,
-    the algorithm proceeds by updating the label of each node
-    to the one that appears most frequently among its neighbors.
-    
+    missing_nodes = graph_nodes - label_nodes
+    extra_nodes = label_nodes - graph_nodes
+
+    if missing_nodes:
+        preview = ", ".join(
+            map(str, sorted(missing_nodes, key=str)[:5])
+        )
+
+        raise ValueError(
+            "Labels are missing graph nodes: "
+            f"{preview}"
+        )
+
+    if extra_nodes:
+        preview = ", ".join(
+            map(str, sorted(extra_nodes, key=str)[:5])
+        )
+
+        raise ValueError(
+            "Labels contain nodes absent from the graph: "
+            f"{preview}"
+        )
+
+    invalid_labels = {
+        node: value
+        for node, value in labels.items()
+        if value not in (0, 1, False, True)
+    }
+
+    if invalid_labels:
+        node, value = next(iter(invalid_labels.items()))
+
+        raise ValueError(
+            "Labels must be binary. "
+            f"Node {node!r} has label {value!r}."
+        )
+
+
+def lpa(
+    graph: nx.Graph,
+    labels: Mapping[Hashable, int],
+    iterations: int = 1000,
+    *,
+    fixed_nodes: Collection[Hashable] | None = None,
+) -> dict[Hashable, int]:
+    """
+    Run deterministic binary label propagation.
+
+    Each non-fixed node adopts the most frequent label among its
+    neighbors. If both labels occur equally often, the node keeps its
+    current label.
+
+    The input ``labels`` dictionary is copied and is not modified.
+
     Parameters
     ----------
-    G : NetworkX graph
-    labels : dict
-        A dictionary with nodes as keys and initial labels as values.
-    iterations : int
-        The number of times to run the algorithm.
+    graph
+        Input NetworkX graph.
+    labels
+        Complete binary label assignment.
+    iterations
+        Maximum number of propagation passes.
+    fixed_nodes
+        Nodes whose labels must remain unchanged.
+
     Returns
     -------
-    labels : dict
-        A dictionary with nodes as keys and label assignments as values."""
-    
+    dict
+        Final propagated labels.
+    """
+    if not isinstance(iterations, int) or isinstance(iterations, bool):
+        raise TypeError("iterations must be an integer.")
+
+    if iterations < 0:
+        raise ValueError("iterations must be non-negative.")
+
+    _validate_labels(graph, labels)
+
+    fixed_nodes = (
+        set()
+        if fixed_nodes is None
+        else set(fixed_nodes)
+    )
+
+    unknown_fixed_nodes = fixed_nodes - set(graph.nodes)
+
+    if unknown_fixed_nodes:
+        preview = ", ".join(
+            map(str, sorted(unknown_fixed_nodes, key=str)[:5])
+        )
+
+        raise ValueError(
+            "Fixed nodes are absent from the graph: "
+            f"{preview}"
+        )
+
+    current_labels = {
+        node: int(labels[node])
+        for node in graph.nodes
+    }
+
     for _ in range(iterations):
-        for node in G.nodes():
-            # Update the labels of the node's neighbors
-            label_counts = {}
-            for neighbor in G.neighbors(node):
-                # Get the neighbor's label
-                label = labels[neighbor]
-                # Increment the count for that label
-                label_counts[label] = label_counts.get(label, 0) + 1
-            # Update the node's label
-            max_count = 0
-            # Initialize a list of labels that appear most frequently
-            max_labels = []
-            # Iterate over the labels and their counts
-            for label, count in label_counts.items():
-                # If the count of the current label is greater than the max_count
-                if count > max_count:
-                    # Update the max_count and reset the max_labels list
-                    max_count = count
-                    # Replace the max_labels list with the current label
-                    max_labels = [label]
-                # If the count is equal to the max_count
-                elif count == max_count:
-                    # Append the current label to the max_labels list
-                    max_labels.append(label)
-            # Select the initial label if conflicting labels
-            if max_labels:  # Check if max_labels is not empty
-                labels[node] = int(max_labels[0])
+        changed = False
 
-    return labels
+        for node in graph.nodes:
+            if node in fixed_nodes:
+                continue
 
-def run_label_propagation(G,exp_status):
-    """Wrapper to run LPA for a single experiment."""
+            neighbors = list(graph.neighbors(node))
 
-    labels = set_labels(G, exp_status)
-    
-    return lpa(G, labels)
+            if not neighbors:
+                continue
+
+            label_counts = Counter(
+                current_labels[neighbor]
+                for neighbor in neighbors
+            )
+
+            maximum_count = max(label_counts.values())
+
+            winning_labels = {
+                label
+                for label, count in label_counts.items()
+                if count == maximum_count
+            }
+
+            current_label = current_labels[node]
+
+            if current_label in winning_labels:
+                new_label = current_label
+            else:
+                new_label = min(winning_labels)
+
+            if new_label != current_label:
+                current_labels[node] = int(new_label)
+                changed = True
+
+        if not changed:
+            break
+
+    return current_labels
+
+
+def run_label_propagation(
+    graph: nx.Graph,
+    experimental_nodes: Collection[Hashable],
+    iterations: int = 1000,
+    *,
+    freeze_experimental: bool = True,
+) -> dict[Hashable, int]:
+    """
+    Initialize labels and run label propagation for one experiment.
+
+    By default, experimentally observed nodes remain fixed at label 1.
+
+    Parameters
+    ----------
+    graph
+        Input NetworkX graph.
+    experimental_nodes
+        Experimentally observed nodes.
+    iterations
+        Maximum number of propagation passes.
+    freeze_experimental
+        Whether experimentally observed nodes remain fixed.
+
+    Returns
+    -------
+    dict
+        Propagated binary labels.
+    """
+    experimental_nodes = set(experimental_nodes)
+
+    initial_labels = set_labels(
+        graph,
+        experimental_nodes,
+    )
+
+    return lpa(
+        graph,
+        initial_labels,
+        iterations=iterations,
+        fixed_nodes=(
+            experimental_nodes
+            if freeze_experimental
+            else None
+        ),
+    )
+
 
 class KemenyYoung:
-    def __init__(self, graph):
+    """
+    Aggregate propagated candidates using node-wise neighborhood scores.
+
+    For a candidate active at node ``v``, its score is
+
+        1 + degree(v)
+
+    Otherwise, its score is zero.
+
+    Notes
+    -----
+    This preserves the behavior of the original code. It is not the
+    formal Kemeny-Young global rank-aggregation algorithm.
+    """
+
+    def __init__(self, graph: nx.Graph) -> None:
+        if graph.number_of_nodes() == 0:
+            raise ValueError(
+                "The graph must contain at least one node."
+            )
+
         self.graph = graph
 
-    def score_candidat(self, status_matrix):
-        """Score the method based on the status matrix and neighbor nodes.
-        So you give it a status matrix and if status in node n is 1 return the name of the method
-        and the score (given by neighbors count with status 1).
+    def score_candidate(
+        self,
+        status_matrix: Mapping[Hashable, int],
+    ) -> list[int]:
+        """
+        Score one candidate at every graph node.
 
         Parameters
         ----------
-        status_matrix : dict
-            A dictionary with nodes as keys and label assignments as values.
+        status_matrix
+            Binary node-status mapping.
 
         Returns
         -------
         list
-            A list with the score of the node
+            Candidate scores in graph-node order.
         """
-        scores = []
-        for node in self.graph.nodes(): 
-            if status_matrix[node] == 1:
-                scores.append(1 + len(list(self.graph.neighbors(node))))
-            else:
-                scores.append(0)
-
-        return scores
-
-    def vote_counting(self, all_candidates_score, candidates_names):
-        """Get the summary of the votes counting per node for each candidate.
-
-        Parameters
-        ----------
-        all_candidates_score : list of list
-            The list of votes for each candidate
-        candidates_names : list of str
-            The list of the candidates
-
-        Returns
-        -------
-        pd.DataFrame
-            A pandas dataframe of the votes summary
-        """
-        df = pd.DataFrame(all_candidates_score).T
-        df.columns = candidates_names
-        df.index = self.graph.nodes()
-        return df
-
-    def first_selected_candidat(self, candidat_list, candidates_names):
-        """Get the first selected candidate or candidates based on the votes counting.
-
-        Parameters
-        ----------
-        candidat_list : list of dict
-            The list of the candidates
-        candidates_names : list of str
-            The list of the candidates
-
-        Returns
-        -------
-        list
-            A list of the first selected candidates
-        """
-        # Run in parallel the score_candidat function
-        all_scores = Parallel(n_jobs=4)(
-            delayed(self.score_candidat)(exp) for exp in candidat_list
-        )
-        # Get the votes counting on a dataframe and return the first selected candidate as a list
-        first_selection = self.vote_counting(all_scores, candidates_names).apply(
-            lambda row: row[row == row.max()].index.tolist() if row.max() > 0 else [], axis=1
+        _validate_labels(
+            self.graph,
+            status_matrix,
         )
 
-        return first_selection
+        return [
+            (
+                1 + self.graph.degree(node)
+                if int(status_matrix[node]) == 1
+                else 0
+            )
+            for node in self.graph.nodes
+        ]
+
+    def vote_counting(
+        self,
+        all_candidate_scores: Sequence[Sequence[int]],
+        candidate_names: Sequence[str],
+    ) -> pd.DataFrame:
+        """
+        Combine candidate scores into a node-by-candidate table.
+        """
+        if len(all_candidate_scores) != len(candidate_names):
+            raise ValueError(
+                "all_candidate_scores and candidate_names "
+                "must have the same length."
+            )
+
+        if len(candidate_names) == 0:
+            raise ValueError(
+                "At least one candidate is required."
+            )
+
+        if len(set(candidate_names)) != len(candidate_names):
+            raise ValueError(
+                "candidate_names must be unique."
+            )
+
+        number_of_nodes = self.graph.number_of_nodes()
+
+        for candidate_name, scores in zip(
+            candidate_names,
+            all_candidate_scores,
+            strict=True,
+        ):
+            if len(scores) != number_of_nodes:
+                raise ValueError(
+                    f"Candidate {candidate_name!r} has "
+                    f"{len(scores)} scores, but the graph contains "
+                    f"{number_of_nodes} nodes."
+                )
+
+        score_table = pd.DataFrame(
+            all_candidate_scores,
+            index=candidate_names,
+        ).T
+
+        score_table.index = pd.Index(
+            list(self.graph.nodes),
+            name="node",
+        )
+
+        return score_table
+
+    def first_selected_candidate(
+        self,
+        candidate_list: Sequence[Mapping[Hashable, int]],
+        candidate_names: Sequence[str],
+    ) -> pd.Series:
+        """
+        Select the highest-scoring candidate at every graph node.
+
+        Ties are retained. Nodes for which all candidates have score zero
+        receive an empty list.
+        """
+        if len(candidate_list) != len(candidate_names):
+            raise ValueError(
+                "candidate_list and candidate_names "
+                "must have the same length."
+            )
+
+        all_scores = [
+            self.score_candidate(candidate)
+            for candidate in candidate_list
+        ]
+
+        score_table = self.vote_counting(
+            all_scores,
+            candidate_names,
+        )
+
+        return score_table.apply(
+            lambda row: (
+                row.index[row == row.max()].tolist()
+                if row.max() > 0
+                else []
+            ),
+            axis=1,
+        ).rename("selected_candidates")
+
+    def propagate_and_select(
+        self,
+        experimental_sets: Sequence[Collection[Hashable]],
+        candidate_names: Sequence[str],
+        *,
+        iterations: int = 1000,
+        freeze_experimental: bool = True,
+    ) -> tuple[list[dict[Hashable, int]], pd.Series]:
+        """
+        Run label propagation for multiple experiments and select winners.
+        """
+        if len(experimental_sets) != len(candidate_names):
+            raise ValueError(
+                "experimental_sets and candidate_names "
+                "must have the same length."
+            )
+
+        propagated_candidates = [
+            run_label_propagation(
+                self.graph,
+                experimental_nodes,
+                iterations=iterations,
+                freeze_experimental=freeze_experimental,
+            )
+            for experimental_nodes in experimental_sets
+        ]
+
+        selected_candidates = self.first_selected_candidate(
+            propagated_candidates,
+            candidate_names,
+        )
+
+        return propagated_candidates, selected_candidates
+
+    # Backward-compatible names from the original script.
+    score_candidat = score_candidate
+    first_selected_candidat = first_selected_candidate
 
 
 if __name__ == "__main__":
+    graph = nx.path_graph(6)
 
-# Create a sample graph
-    G = nx.Graph()
-    G.add_nodes_from(range(1, 60))
+    experimental_sets = [
+        [0, 1],
+        [4, 5],
+    ]
 
-    # Arbitrary connections
-    edges = [(random.randint(1, 60), random.randint(1, 60)) 
-            for _ in range(100)]
-    G.add_edges_from(edges)
+    candidate_names = [
+        "Candidate 1",
+        "Candidate 2",
+    ]
 
+    aggregator = KemenyYoung(graph)
 
+    propagated, selected = aggregator.propagate_and_select(
+        experimental_sets=experimental_sets,
+        candidate_names=candidate_names,
+        iterations=20,
+        freeze_experimental=True,
+    )
 
+    for name, candidate_status in zip(
+        candidate_names,
+        propagated,
+        strict=True,
+    ):
+        print(f"{name}: {candidate_status}")
 
-    select_nodes1 = [14, 39, 50, 54, 56, 22, 44, 53, 16, 57, 47, 40, 55, 43, 10, 25, 9, 37, 19, 7, 21, 23, 31, 36, 52]
-    select_nodes2 = [20, 18, 56, 40, 3, 30, 45, 34, 58, 31, 14, 32, 7, 28]
-
-    Candidat1 = LPA.set_labels(G, select_nodes1)
-    Candidat2 = LPA.set_labels(G, select_nodes2)
-
-    votes_c1 = LPA.lpa(G, Candidat1, iterations=20)
-    votes_c2 = LPA.lpa(G, Candidat2, iterations=20)
-
-    ky = KemenyYoung(G)
-    experiments = [votes_c1, votes_c2]
-    all_scores = Parallel(n_jobs=4)(delayed(ky.score_candidat)(exp) for exp in experiments)
-    print("All Scores:", all_scores)
-    print(ky.first_selected_candidat(experiments,["Candidat1","Candidat2"]))
-
-# # Plot the graph
-# pos = nx.spring_layout(G)
-# plt.figure(figsize=(10, 10))
-
-# # Draw nodes
-# nx.draw_networkx_nodes(G, pos, node_size=500, node_color='blue', alpha=0.8)
-# nx.draw_networkx_nodes(G, pos, nodelist=select_nodes2, node_size=500, node_color='red', alpha=0.8)
-
-# # Draw edges
-# nx.draw_networkx_edges(G, pos, edgelist=G.edges, width=1.0, alpha=0.5)
-
-# # Draw labels
-# nx.draw_networkx_labels(G, pos, font_size=12, font_color='white')
-
-# plt.title('Graph with 30 Nodes and Arbitrary Connections')
-# plt.show()
-
-
-
-# print("Score Candidat1:", score_candidat(votes_c1,G))
-
-# experiments = [Candidat1,Candidat2]
-# all_scores = Parallel(n_jobs=4)(delayed(score_candidat)(exp, G) for exp in experiments)
-
-# print("All Scores:", all_scores)
-
-# print(vote_counting(all_scores,["Candidat1","Candidat2"],G))
-# print(vote_counting(all_scores,["Candidat1","Candidat2"],G).apply(
-#     lambda row: row[row == row.max()].index.tolist(), axis=1))
-
-# print(first_selected_candidat(experiments,G,["Candidat1","Candidat2"]))
+    print("\nSelected candidates:")
+    print(selected)

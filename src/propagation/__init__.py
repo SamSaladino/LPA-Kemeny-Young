@@ -1,3 +1,15 @@
-"""Label propagation and Kemeny-Young aggregation algorithms."""
+"""Label propagation and candidate aggregation."""
 
-__all__: list[str] = []
+from .kemeny import (
+    KemenyYoung,
+    lpa,
+    run_label_propagation,
+    set_labels,
+)
+
+__all__ = [
+    "KemenyYoung",
+    "lpa",
+    "run_label_propagation",
+    "set_labels",
+]
