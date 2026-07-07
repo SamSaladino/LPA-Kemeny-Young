@@ -92,8 +92,7 @@ def test_candidate_scoring():
         }
     )
 
-    assert scores == [2, 3, 0]
-
+    assert scores == [2, 2, 0]
 
 def test_candidate_selection():
     graph = nx.path_graph(3)
@@ -135,3 +134,37 @@ def test_candidate_selection():
         selected,
         expected,
     )
+
+def test_candidate_scoring_uses_active_neighbors():
+    graph = nx.path_graph(4)
+    aggregator = KemenyYoung(graph)
+
+    candidate_a = {
+        0: 1,
+        1: 1,
+        2: 1,
+        3: 0,
+    }
+
+    candidate_b = {
+        0: 0,
+        1: 1,
+        2: 0,
+        3: 0,
+    }
+
+    selected = aggregator.first_selected_candidate(
+        candidate_list=[
+            candidate_a,
+            candidate_b,
+        ],
+        candidate_names=[
+            "A",
+            "B",
+        ],
+    )
+
+    # At node 1:
+    # A has two active neighbors -> score 3.
+    # B has zero active neighbors -> score 1.
+    assert selected.loc[1] == ["A"]
