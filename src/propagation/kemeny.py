@@ -284,31 +284,34 @@ class KemenyYoung:
         status_matrix: Mapping[Hashable, int],
     ) -> list[int]:
         """
-        Score one candidate at every graph node.
+        Score active nodes using candidate-specific neighborhood support.
 
-        Parameters
-        ----------
-        status_matrix
-            Binary node-status mapping.
-
-        Returns
-        -------
-        list
-            Candidate scores in graph-node order.
+        An inactive node receives score zero. An active node receives one
+        plus the number of its neighbors that are also active for the same
+        candidate.
         """
         _validate_labels(
             self.graph,
             status_matrix,
         )
 
-        return [
-            (
-                1 + self.graph.degree(node)
-                if int(status_matrix[node]) == 1
-                else 0
+        scores = []
+
+        for node in self.graph.nodes:
+            if int(status_matrix[node]) == 0:
+                scores.append(0)
+                continue
+
+            active_neighbors = sum(
+                int(status_matrix[neighbor]) == 1
+                for neighbor in self.graph.neighbors(node)
             )
-            for node in self.graph.nodes
-        ]
+
+            scores.append(
+                1 + active_neighbors
+            )
+
+        return scores
 
     def vote_counting(
         self,
