@@ -111,29 +111,36 @@ def lpa(
     fixed_nodes: Collection[Hashable] | None = None,
 ) -> dict[Hashable, int]:
     """
-    Run deterministic binary label propagation.
+    Run synchronous deterministic binary label propagation.
 
-    Each non-fixed node adopts the most frequent label among its
-    neighbors. If both labels occur equally often, the node keeps its
-    current label.
+    At each iteration, every node adopts the most frequent label among
+    its neighbors. All updates are computed from the labels at the
+    beginning of the iteration and are applied simultaneously.
 
-    The input ``labels`` dictionary is copied and is not modified.
+    If labels 0 and 1 are equally represented among a node's neighbors,
+    the node keeps its current label.
+
+    Nodes without neighbors also keep their current label.
 
     Parameters
     ----------
     graph
         Input NetworkX graph.
     labels
-        Complete binary label assignment.
+        Complete initial binary label assignment.
     iterations
-        Maximum number of propagation passes.
+        Maximum number of synchronous propagation iterations.
     fixed_nodes
-        Nodes whose labels must remain unchanged.
+        Retained for compatibility with the previous interface.
+        When provided, these nodes remain unchanged. In the intended
+        coverage-classification workflow, this should be ``None``.
 
     Returns
     -------
     dict
-        Final propagated labels.
+        Final binary labels. After propagation, label 1 represents
+        locally well-covered nodes and label 0 represents locally
+        poorly-covered nodes.
     """
     if not isinstance(iterations, int) or isinstance(iterations, bool):
         raise TypeError("iterations must be an integer.")
@@ -167,7 +174,9 @@ def lpa(
     }
 
     for _ in range(iterations):
-        changed = False
+        # Start from a copy so every update uses current_labels,
+        # i.e. the labels at the beginning of this iteration.
+        next_labels = current_labels.copy()
 
         for node in graph.nodes:
             if node in fixed_nodes:
@@ -175,6 +184,7 @@ def lpa(
 
             neighbors = list(graph.neighbors(node))
 
+            # Isolated nodes retain their current state.
             if not neighbors:
                 continue
 
@@ -183,27 +193,23 @@ def lpa(
                 for neighbor in neighbors
             )
 
-            maximum_count = max(label_counts.values())
+            count_zero = label_counts.get(0, 0)
+            count_one = label_counts.get(1, 0)
 
-            winning_labels = {
-                label
-                for label, count in label_counts.items()
-                if count == maximum_count
-            }
+            if count_one > count_zero:
+                next_labels[node] = 1
 
-            current_label = current_labels[node]
+            elif count_zero > count_one:
+                next_labels[node] = 0
 
-            if current_label in winning_labels:
-                new_label = current_label
             else:
-                new_label = min(winning_labels)
+                # Tie: retain the node's current label.
+                next_labels[node] = current_labels[node]
 
-            if new_label != current_label:
-                current_labels[node] = int(new_label)
-                changed = True
-
-        if not changed:
+        if next_labels == current_labels:
             break
+
+        current_labels = next_labels
 
     return current_labels
 
@@ -216,25 +222,35 @@ def run_label_propagation(
     freeze_experimental: bool = True,
 ) -> dict[Hashable, int]:
     """
-    Initialize labels and run label propagation for one experiment.
+    Initialize labels and classify nodes using synchronous propagation.
 
-    By default, experimentally observed nodes remain fixed at label 1.
+    Initially:
+
+    - label 1 indicates an experimentally observed metabolite;
+    - label 0 indicates an unobserved metabolite.
+
+    During propagation, all nodes, including experimentally observed
+    nodes, are allowed to change state. Therefore, after propagation:
+
+    - label 1 indicates a locally well-covered node;
+    - label 0 indicates a locally poorly-covered node.
 
     Parameters
     ----------
     graph
         Input NetworkX graph.
     experimental_nodes
-        Experimentally observed nodes.
+        Experimentally observed nodes used to initialize the labels.
     iterations
-        Maximum number of propagation passes.
+        Maximum number of synchronous propagation iterations.
     freeze_experimental
-        Whether experimentally observed nodes remain fixed.
+        Retained only for backward compatibility. Experimental nodes are
+        not frozen in this coverage-classification implementation.
 
     Returns
     -------
     dict
-        Propagated binary labels.
+        Final binary coverage-state assignment.
     """
     experimental_nodes = set(experimental_nodes)
 
@@ -247,13 +263,8 @@ def run_label_propagation(
         graph,
         initial_labels,
         iterations=iterations,
-        fixed_nodes=(
-            experimental_nodes
-            if freeze_experimental
-            else None
-        ),
+        fixed_nodes=None,
     )
-
 
 class KemenyYoung:
     """
