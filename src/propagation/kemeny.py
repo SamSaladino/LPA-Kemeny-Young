@@ -244,8 +244,8 @@ def run_label_propagation(
     iterations
         Maximum number of synchronous propagation iterations.
     freeze_experimental
-        Retained only for backward compatibility. Experimental nodes are
-        not frozen in this coverage-classification implementation.
+        When ``True`` (the default), experimental nodes are kept fixed at
+        label 1 throughout propagation.
 
     Returns
     -------
@@ -263,7 +263,7 @@ def run_label_propagation(
         graph,
         initial_labels,
         iterations=iterations,
-        fixed_nodes=None,
+        fixed_nodes=experimental_nodes if freeze_experimental else None,
     )
 
 class KemenyYoung:
