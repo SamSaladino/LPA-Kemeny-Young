@@ -219,7 +219,7 @@ def run_label_propagation(
     experimental_nodes: Collection[Hashable],
     iterations: int = 1000,
     *,
-    freeze_experimental: bool = True,
+    freeze_experimental: bool = False,
 ) -> dict[Hashable, int]:
     """
     Initialize labels and classify nodes using synchronous propagation.
@@ -468,7 +468,7 @@ if __name__ == "__main__":
         experimental_sets=experimental_sets,
         candidate_names=candidate_names,
         iterations=20,
-        freeze_experimental=True,
+        freeze_experimental=False,
     )
 
     for name, candidate_status in zip(
