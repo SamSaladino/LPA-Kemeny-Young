@@ -416,7 +416,7 @@ class KemenyYoung:
         candidate_names: Sequence[str],
         *,
         iterations: int = 1000,
-        freeze_experimental: bool = True,
+        freeze_experimental: bool = False,
     ) -> tuple[list[dict[Hashable, int]], pd.Series]:
         """
         Run label propagation for multiple experiments and select winners.
